@@ -14,10 +14,8 @@ import android.widget.FrameLayout;
 import android.widget.TextView;
 
 import androidx.annotation.NonNull;
-import androidx.annotation.OptIn;
 import androidx.appcompat.app.AppCompatActivity;
 import androidx.camera.core.CameraSelector;
-import androidx.camera.core.ExperimentalGetImage;
 import androidx.camera.core.ImageAnalysis;
 import androidx.camera.core.ImageProxy;
 import androidx.camera.core.Preview;
@@ -185,19 +183,10 @@ public class MainActivity extends AppCompatActivity {
 
     private void setupMediaPipe() {
         try {
-            BaseOptions.Builder baseBuilder = BaseOptions.builder()
-                .setModelAssetPath("hand_landmarker.task");
-
-            // Пробуем GPU, если не получится — CPU
-            BaseOptions baseOptions;
-            try {
-                baseOptions = baseBuilder
-                    .setDelegate(BaseOptions.Delegate.GPU)
-                    .build();
-            } catch (Exception e) {
-                Log.w(TAG, "GPU delegate failed, falling back to CPU");
-                baseOptions = baseBuilder.build();
-            }
+            // Просто CPU — работает везде без проблем
+            BaseOptions baseOptions = BaseOptions.builder()
+                .setModelAssetPath("hand_landmarker.task")
+                .build();
 
             HandLandmarker.HandLandmarkerOptions options =
                 HandLandmarker.HandLandmarkerOptions.builder()
@@ -209,7 +198,7 @@ public class MainActivity extends AppCompatActivity {
                     .setMinTrackingConfidence(0.6f)
                     .setResultListener(this::onHandResults)
                     .setErrorListener((error) -> {
-                        Log.e(TAG, "MediaPipe error: " + error.message());
+                        Log.e(TAG, "MediaPipe error: " + error.getMessage());
                     })
                     .build();
 
@@ -272,7 +261,7 @@ public class MainActivity extends AppCompatActivity {
         }
 
         try {
-            Bitmap bitmap = toBitmap(imageProxy);
+            Bitmap bitmap = imageProxy.toBitmap();
 
             if (bitmap != null) {
                 long timestamp = System.currentTimeMillis();
@@ -288,15 +277,6 @@ public class MainActivity extends AppCompatActivity {
             Log.e(TAG, "Frame processing error", e);
         } finally {
             imageProxy.close();
-        }
-    }
-
-    private Bitmap toBitmap(ImageProxy imageProxy) {
-        try {
-            return imageProxy.toBitmap();
-        } catch (Exception e) {
-            Log.e(TAG, "toBitmap failed", e);
-            return null;
         }
     }
 
@@ -351,6 +331,7 @@ public class MainActivity extends AppCompatActivity {
         int viewH = drawingView.getHeight();
         if (viewW == 0 || viewH == 0) return;
 
+        // === РУКА 1 ===
         List<NormalizedLandmark> landmarks1 = hands.get(0);
 
         float[][] skeleton = new float[21][2];
@@ -396,7 +377,7 @@ public class MainActivity extends AppCompatActivity {
                 } else {
                     drawingView.continueStroke(smoothX1, smoothY1);
                 }
-                mode.append("✏️ Рисование");
+                mode.append("Рисование");
                 break;
 
             case "pinch":
@@ -411,11 +392,11 @@ public class MainActivity extends AppCompatActivity {
                     drawingView.continueGrab(smoothX1, smoothY1);
                 }
                 if (drawingView.isGrabbing()) {
-                    mode.append("👌 Захват (")
+                    mode.append("Захват (")
                         .append(drawingView.getGrabbedCount())
                         .append(")");
                 } else {
-                    mode.append("👌 Щипок");
+                    mode.append("Щипок");
                 }
                 break;
 
@@ -429,7 +410,7 @@ public class MainActivity extends AppCompatActivity {
                 if (drawingView.isGrabbing()) {
                     drawingView.finishGrab();
                 }
-                mode.append("✋ Пауза");
+                mode.append("Пауза");
                 break;
 
             default:
@@ -442,10 +423,11 @@ public class MainActivity extends AppCompatActivity {
                 if (drawingView.isGrabbing()) {
                     drawingView.finishGrab();
                 }
-                mode.append("🤚 Готов");
+                mode.append("Готов");
                 break;
         }
 
+        // === РУКА 2 ===
         if (numHands >= 2) {
             List<NormalizedLandmark> landmarks2 = hands.get(1);
             String rawGesture2 = detectGesture(landmarks2);
@@ -453,16 +435,18 @@ public class MainActivity extends AppCompatActivity {
 
             mode.append(" | ");
             switch (gesture2) {
-                case "point": mode.append("✏️"); break;
-                case "pinch": mode.append("👌"); break;
-                case "open": mode.append("✋"); break;
-                default: mode.append("🤚"); break;
+                case "point": mode.append("Рисование"); break;
+                case "pinch": mode.append("Захват"); break;
+                case "open": mode.append("Пауза"); break;
+                default: mode.append("Готов"); break;
             }
         }
 
         statusText.setText(mode.toString());
         drawingView.invalidate();
     }
+
+    // ============ ЖЕСТЫ ============
 
     private String detectGesture(List<NormalizedLandmark> lm) {
         boolean indexUp = lm.get(8).y() < lm.get(6).y() - 0.03f;
@@ -508,6 +492,8 @@ public class MainActivity extends AppCompatActivity {
         }
         return confirmedGesture2;
     }
+
+    // ============ ЖИЗНЕННЫЙ ЦИКЛ ============
 
     @Override
     protected void onResume() {
