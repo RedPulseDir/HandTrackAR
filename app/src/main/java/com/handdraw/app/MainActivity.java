@@ -6,7 +6,6 @@ import android.graphics.Bitmap;
 import android.graphics.Color;
 import android.os.Bundle;
 import android.util.Log;
-import android.util.Size;
 import android.view.View;
 import android.view.WindowManager;
 import android.widget.Button;
@@ -36,6 +35,7 @@ import com.google.mediapipe.tasks.components.containers.NormalizedLandmark;
 import java.util.List;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
+import java.util.concurrent.atomic.AtomicBoolean;
 
 public class MainActivity extends AppCompatActivity {
 
@@ -53,22 +53,27 @@ public class MainActivity extends AppCompatActivity {
     private HandLandmarker handLandmarker;
     private ExecutorService cameraExecutor;
 
+    // Защита от двойной отправки кадров
+    private final AtomicBoolean isProcessing = new AtomicBoolean(false);
+
     private int frameCount = 0;
     private long lastFpsTime = System.currentTimeMillis();
 
+    // Жесты рука 1
     private String confirmedGesture1 = "none";
     private String pendingGesture1 = "none";
     private int gestureFrames1 = 0;
     private boolean isDrawing1 = false;
-    private float smoothX1 = 0f;
-    private float smoothY1 = 0f;
+    private float smoothX1 = -1f;
+    private float smoothY1 = -1f;
 
+    // Жесты рука 2
     private String confirmedGesture2 = "none";
     private String pendingGesture2 = "none";
     private int gestureFrames2 = 0;
 
-    private static final float SMOOTH_FACTOR = 0.35f;
-    private static final float PINCH_THRESHOLD = 0.07f;
+    private static final float SMOOTH_FACTOR = 0.4f;
+    private static final float PINCH_THRESHOLD = 0.065f;
     private static final int GESTURE_THRESHOLD = 2;
 
     private final int[] colors = {
@@ -84,19 +89,16 @@ public class MainActivity extends AppCompatActivity {
 
     private long lastTimestamp = 0;
 
+    // Размеры входного изображения для маппинга координат
+    private int imageWidth = 640;
+    private int imageHeight = 480;
+
     @Override
     protected void onCreate(Bundle savedInstanceState) {
         super.onCreate(savedInstanceState);
 
         getWindow().addFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON);
-        getWindow().getDecorView().setSystemUiVisibility(
-            View.SYSTEM_UI_FLAG_FULLSCREEN
-            | View.SYSTEM_UI_FLAG_HIDE_NAVIGATION
-            | View.SYSTEM_UI_FLAG_IMMERSIVE_STICKY
-            | View.SYSTEM_UI_FLAG_LAYOUT_FULLSCREEN
-            | View.SYSTEM_UI_FLAG_LAYOUT_HIDE_NAVIGATION
-            | View.SYSTEM_UI_FLAG_LAYOUT_STABLE
-        );
+        hideSystemUI();
 
         setContentView(R.layout.activity_main);
 
@@ -142,6 +144,17 @@ public class MainActivity extends AppCompatActivity {
         }
     }
 
+    private void hideSystemUI() {
+        getWindow().getDecorView().setSystemUiVisibility(
+            View.SYSTEM_UI_FLAG_FULLSCREEN
+            | View.SYSTEM_UI_FLAG_HIDE_NAVIGATION
+            | View.SYSTEM_UI_FLAG_IMMERSIVE_STICKY
+            | View.SYSTEM_UI_FLAG_LAYOUT_FULLSCREEN
+            | View.SYSTEM_UI_FLAG_LAYOUT_HIDE_NAVIGATION
+            | View.SYSTEM_UI_FLAG_LAYOUT_STABLE
+        );
+    }
+
     @Override
     public void onRequestPermissionsResult(int requestCode,
             @NonNull String[] permissions, @NonNull int[] grantResults) {
@@ -181,9 +194,10 @@ public class MainActivity extends AppCompatActivity {
         }
     }
 
+    // ============ MEDIAPIPE ============
+
     private void setupMediaPipe() {
         try {
-            // Просто CPU — работает везде без проблем
             BaseOptions baseOptions = BaseOptions.builder()
                 .setModelAssetPath("hand_landmarker.task")
                 .build();
@@ -192,10 +206,10 @@ public class MainActivity extends AppCompatActivity {
                 HandLandmarker.HandLandmarkerOptions.builder()
                     .setBaseOptions(baseOptions)
                     .setRunningMode(RunningMode.LIVE_STREAM)
-                    .setNumHands(2)
-                    .setMinHandDetectionConfidence(0.7f)
-                    .setMinHandPresenceConfidence(0.7f)
-                    .setMinTrackingConfidence(0.6f)
+                    .setNumHands(1)
+                    .setMinHandDetectionConfidence(0.6f)
+                    .setMinHandPresenceConfidence(0.6f)
+                    .setMinTrackingConfidence(0.5f)
                     .setResultListener(this::onHandResults)
                     .setErrorListener((error) -> {
                         Log.e(TAG, "MediaPipe error: " + error.getMessage());
@@ -203,13 +217,15 @@ public class MainActivity extends AppCompatActivity {
                     .build();
 
             handLandmarker = HandLandmarker.createFromOptions(this, options);
-            Log.d(TAG, "MediaPipe initialized successfully");
+            Log.d(TAG, "MediaPipe initialized");
 
         } catch (Exception e) {
-            Log.e(TAG, "Failed to initialize MediaPipe", e);
+            Log.e(TAG, "MediaPipe init failed", e);
             runOnUiThread(() -> statusText.setText("Ошибка MediaPipe!"));
         }
     }
+
+    // ============ КАМЕРА ============
 
     private void startCamera() {
         ListenableFuture<ProcessCameraProvider> future =
@@ -219,7 +235,8 @@ public class MainActivity extends AppCompatActivity {
             try {
                 ProcessCameraProvider provider = future.get();
 
-                Preview preview = new Preview.Builder().build();
+                Preview preview = new Preview.Builder()
+                    .build();
                 preview.setSurfaceProvider(previewView.getSurfaceProvider());
 
                 previewView.setImplementationMode(
@@ -227,8 +244,9 @@ public class MainActivity extends AppCompatActivity {
                 previewView.setScaleType(
                     PreviewView.ScaleType.FILL_CENTER);
 
+                // Уменьшаем разрешение для скорости
                 ImageAnalysis analysis = new ImageAnalysis.Builder()
-                    .setTargetResolution(new Size(640, 480))
+                    .setTargetResolution(new android.util.Size(320, 240))
                     .setBackpressureStrategy(
                         ImageAnalysis.STRATEGY_KEEP_ONLY_LATEST)
                     .setOutputImageFormat(
@@ -245,7 +263,6 @@ public class MainActivity extends AppCompatActivity {
                     this, selector, preview, analysis);
 
                 runOnUiThread(() -> loadingScreen.setVisibility(View.GONE));
-
                 Log.d(TAG, "Camera started");
 
             } catch (Exception e) {
@@ -260,10 +277,19 @@ public class MainActivity extends AppCompatActivity {
             return;
         }
 
+        // Пропускаем кадр если предыдущий ещё обрабатывается
+        if (!isProcessing.compareAndSet(false, true)) {
+            imageProxy.close();
+            return;
+        }
+
         try {
             Bitmap bitmap = imageProxy.toBitmap();
 
             if (bitmap != null) {
+                imageWidth = bitmap.getWidth();
+                imageHeight = bitmap.getHeight();
+
                 long timestamp = System.currentTimeMillis();
                 if (timestamp <= lastTimestamp) {
                     timestamp = lastTimestamp + 1;
@@ -272,28 +298,36 @@ public class MainActivity extends AppCompatActivity {
 
                 MPImage mpImage = new BitmapImageBuilder(bitmap).build();
                 handLandmarker.detectAsync(mpImage, timestamp);
+            } else {
+                isProcessing.set(false);
             }
         } catch (Exception e) {
-            Log.e(TAG, "Frame processing error", e);
+            Log.e(TAG, "Frame error", e);
+            isProcessing.set(false);
         } finally {
             imageProxy.close();
         }
     }
 
+    // ============ РЕЗУЛЬТАТЫ ============
+
     private void onHandResults(HandLandmarkerResult result, MPImage input) {
+        isProcessing.set(false);
+
         runOnUiThread(() -> {
             try {
                 processHandResults(result);
             } catch (Exception e) {
-                Log.e(TAG, "Result processing error", e);
+                Log.e(TAG, "Result error", e);
             }
         });
     }
 
     private void processHandResults(HandLandmarkerResult result) {
+        // FPS
         frameCount++;
         long now = System.currentTimeMillis();
-        if (now - lastFpsTime >= 500) {
+        if (now - lastFpsTime >= 1000) {
             int fps = (int)(frameCount / ((now - lastFpsTime) / 1000f));
             fpsText.setText(fps + " fps");
             frameCount = 0;
@@ -311,8 +345,7 @@ public class MainActivity extends AppCompatActivity {
                           : R.drawable.status_dot_inactive);
 
         if (numHands == 0) {
-            statusText.setText("Ожидание рук...");
-
+            statusText.setText("Ожидание...");
             if (isDrawing1) {
                 drawingView.finishStroke();
                 isDrawing1 = false;
@@ -320,9 +353,7 @@ public class MainActivity extends AppCompatActivity {
             if (drawingView.isGrabbing()) {
                 drawingView.finishGrab();
             }
-
             confirmedGesture1 = "none";
-            confirmedGesture2 = "none";
             drawingView.hideSkeletonAndCursor();
             return;
         }
@@ -331,41 +362,75 @@ public class MainActivity extends AppCompatActivity {
         int viewH = drawingView.getHeight();
         if (viewW == 0 || viewH == 0) return;
 
-        // === РУКА 1 ===
-        List<NormalizedLandmark> landmarks1 = hands.get(0);
+        List<NormalizedLandmark> landmarks = hands.get(0);
 
+        // ===== ПРАВИЛЬНЫЙ МАППИНГ КООРДИНАТ =====
+        // Фронтальная камера: PreviewView уже зеркалит картинку
+        // MediaPipe даёт координаты незеркалённого изображения
+        // Нужно зеркалить X чтобы совпало с превью
+
+        // Вычисляем как PreviewView масштабирует (FILL_CENTER)
+        float videoAspect = (float) imageWidth / imageHeight;
+        float screenAspect = (float) viewW / viewH;
+
+        float scaleX, scaleY, offsetX, offsetY;
+
+        if (screenAspect > videoAspect) {
+            // Экран шире — подгоняем по ширине, обрезаем верх/низ
+            scaleX = viewW;
+            scaleY = viewW / videoAspect;
+            offsetX = 0;
+            offsetY = (viewH - scaleY) / 2f;
+        } else {
+            // Экран уже — подгоняем по высоте, обрезаем бока
+            scaleX = viewH * videoAspect;
+            scaleY = viewH;
+            offsetX = (viewW - scaleX) / 2f;
+            offsetY = 0;
+        }
+
+        // Строим скелет с правильными координатами
         float[][] skeleton = new float[21][2];
         for (int i = 0; i < 21; i++) {
-            NormalizedLandmark lm = landmarks1.get(i);
-            skeleton[i][0] = (1f - lm.x()) * viewW;
-            skeleton[i][1] = lm.y() * viewH;
+            NormalizedLandmark lm = landmarks.get(i);
+            // Зеркалим X (1 - x) для совпадения с превью фронтальной камеры
+            float sx = (1f - lm.x()) * scaleX + offsetX;
+            float sy = lm.y() * scaleY + offsetY;
+            skeleton[i][0] = sx;
+            skeleton[i][1] = sy;
         }
         drawingView.setSkeletonPoints(skeleton);
 
-        String rawGesture1 = detectGesture(landmarks1);
-        String gesture1 = stabilizeGesture1(rawGesture1);
+        // Жест
+        String rawGesture = detectGesture(landmarks);
+        String gesture = stabilizeGesture1(rawGesture);
 
-        NormalizedLandmark indexTip1 = landmarks1.get(8);
-        NormalizedLandmark thumbTip1 = landmarks1.get(4);
+        // Позиция кончика указательного пальца
+        float tipX = skeleton[8][0];
+        float tipY = skeleton[8][1];
 
-        float rawX1, rawY1;
-        if ("pinch".equals(gesture1)) {
-            rawX1 = (1f - (indexTip1.x() + thumbTip1.x()) / 2f) * viewW;
-            rawY1 = ((indexTip1.y() + thumbTip1.y()) / 2f) * viewH;
-        } else {
-            rawX1 = (1f - indexTip1.x()) * viewW;
-            rawY1 = indexTip1.y() * viewH;
+        // Для щипка — середина между большим и указательным
+        if ("pinch".equals(gesture)) {
+            tipX = (skeleton[4][0] + skeleton[8][0]) / 2f;
+            tipY = (skeleton[4][1] + skeleton[8][1]) / 2f;
         }
 
-        smoothX1 = smoothX1 * SMOOTH_FACTOR + rawX1 * (1f - SMOOTH_FACTOR);
-        smoothY1 = smoothY1 * SMOOTH_FACTOR + rawY1 * (1f - SMOOTH_FACTOR);
+        // Сглаживание
+        if (smoothX1 < 0) {
+            smoothX1 = tipX;
+            smoothY1 = tipY;
+        } else {
+            smoothX1 = smoothX1 * SMOOTH_FACTOR + tipX * (1f - SMOOTH_FACTOR);
+            smoothY1 = smoothY1 * SMOOTH_FACTOR + tipY * (1f - SMOOTH_FACTOR);
+        }
 
         drawingView.setCursorPosition(smoothX1, smoothY1);
         drawingView.setCursorVisible(true);
 
-        StringBuilder mode = new StringBuilder();
+        // Обработка жестов
+        String modeStr;
 
-        switch (gesture1) {
+        switch (gesture) {
             case "point":
                 drawingView.setCursorColor(drawingView.getCurrentColor());
                 if (drawingView.isGrabbing()) {
@@ -377,7 +442,7 @@ public class MainActivity extends AppCompatActivity {
                 } else {
                     drawingView.continueStroke(smoothX1, smoothY1);
                 }
-                mode.append("Рисование");
+                modeStr = "Рисование";
                 break;
 
             case "pinch":
@@ -391,18 +456,13 @@ public class MainActivity extends AppCompatActivity {
                 } else {
                     drawingView.continueGrab(smoothX1, smoothY1);
                 }
-                if (drawingView.isGrabbing()) {
-                    mode.append("Захват (")
-                        .append(drawingView.getGrabbedCount())
-                        .append(")");
-                } else {
-                    mode.append("Щипок");
-                }
+                modeStr = drawingView.isGrabbing()
+                    ? "Захват (" + drawingView.getGrabbedCount() + ")"
+                    : "Щипок";
                 break;
 
             case "open":
-                drawingView.setCursorColor(
-                    Color.argb(100, 255, 255, 255));
+                drawingView.setCursorColor(Color.argb(100, 255, 255, 255));
                 if (isDrawing1) {
                     drawingView.finishStroke();
                     isDrawing1 = false;
@@ -410,12 +470,11 @@ public class MainActivity extends AppCompatActivity {
                 if (drawingView.isGrabbing()) {
                     drawingView.finishGrab();
                 }
-                mode.append("Пауза");
+                modeStr = "Пауза";
                 break;
 
             default:
-                drawingView.setCursorColor(
-                    Color.argb(80, 255, 255, 255));
+                drawingView.setCursorColor(Color.argb(80, 255, 255, 255));
                 if (isDrawing1) {
                     drawingView.finishStroke();
                     isDrawing1 = false;
@@ -423,41 +482,27 @@ public class MainActivity extends AppCompatActivity {
                 if (drawingView.isGrabbing()) {
                     drawingView.finishGrab();
                 }
-                mode.append("Готов");
+                modeStr = "Готов";
                 break;
         }
 
-        // === РУКА 2 ===
-        if (numHands >= 2) {
-            List<NormalizedLandmark> landmarks2 = hands.get(1);
-            String rawGesture2 = detectGesture(landmarks2);
-            String gesture2 = stabilizeGesture2(rawGesture2);
-
-            mode.append(" | ");
-            switch (gesture2) {
-                case "point": mode.append("Рисование"); break;
-                case "pinch": mode.append("Захват"); break;
-                case "open": mode.append("Пауза"); break;
-                default: mode.append("Готов"); break;
-            }
-        }
-
-        statusText.setText(mode.toString());
+        statusText.setText(modeStr);
         drawingView.invalidate();
     }
 
     // ============ ЖЕСТЫ ============
 
     private String detectGesture(List<NormalizedLandmark> lm) {
-        boolean indexUp = lm.get(8).y() < lm.get(6).y() - 0.03f;
-        boolean middleUp = lm.get(12).y() < lm.get(10).y() - 0.03f;
-        boolean ringUp = lm.get(16).y() < lm.get(14).y() - 0.03f;
-        boolean pinkyUp = lm.get(20).y() < lm.get(18).y() - 0.03f;
+        // Палец поднят если кончик ВЫШЕ (меньше Y) чем PIP сустав
+        boolean indexUp = lm.get(8).y() < lm.get(6).y() - 0.02f;
+        boolean middleUp = lm.get(12).y() < lm.get(10).y() - 0.02f;
+        boolean ringUp = lm.get(16).y() < lm.get(14).y() - 0.02f;
+        boolean pinkyUp = lm.get(20).y() < lm.get(18).y() - 0.02f;
 
-        float pinchDist = (float) Math.hypot(
-            lm.get(4).x() - lm.get(8).x(),
-            lm.get(4).y() - lm.get(8).y()
-        );
+        // Расстояние между большим и указательным
+        float dx = lm.get(4).x() - lm.get(8).x();
+        float dy = lm.get(4).y() - lm.get(8).y();
+        float pinchDist = (float) Math.sqrt(dx * dx + dy * dy);
 
         if (pinchDist < PINCH_THRESHOLD) return "pinch";
         if (indexUp && !middleUp && !ringUp && !pinkyUp) return "point";
@@ -493,19 +538,12 @@ public class MainActivity extends AppCompatActivity {
         return confirmedGesture2;
     }
 
-    // ============ ЖИЗНЕННЫЙ ЦИКЛ ============
+    // ============ LIFECYCLE ============
 
     @Override
     protected void onResume() {
         super.onResume();
-        getWindow().getDecorView().setSystemUiVisibility(
-            View.SYSTEM_UI_FLAG_FULLSCREEN
-            | View.SYSTEM_UI_FLAG_HIDE_NAVIGATION
-            | View.SYSTEM_UI_FLAG_IMMERSIVE_STICKY
-            | View.SYSTEM_UI_FLAG_LAYOUT_FULLSCREEN
-            | View.SYSTEM_UI_FLAG_LAYOUT_HIDE_NAVIGATION
-            | View.SYSTEM_UI_FLAG_LAYOUT_STABLE
-        );
+        hideSystemUI();
     }
 
     @Override
@@ -518,4 +556,4 @@ public class MainActivity extends AppCompatActivity {
             handLandmarker.close();
         }
     }
-}
+                                       }
