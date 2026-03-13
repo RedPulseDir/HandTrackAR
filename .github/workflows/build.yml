@@ -10,7 +10,7 @@ on:
 jobs:
   build:
     runs-on: ubuntu-latest
-    
+
     steps:
     - name: Checkout code
       uses: actions/checkout@v4
@@ -24,6 +24,10 @@ jobs:
     - name: Setup Android SDK
       uses: android-actions/setup-android@v3
 
+    - name: Install Android SDK components
+      run: |
+        sdkmanager "platforms;android-34" "build-tools;34.0.0"
+
     - name: Download MediaPipe model
       run: |
         mkdir -p app/src/main/assets
@@ -31,15 +35,49 @@ jobs:
           "https://storage.googleapis.com/mediapipe-models/hand_landmarker/hand_landmarker/float16/latest/hand_landmarker.task"
         ls -la app/src/main/assets/
 
-    - name: Generate Gradle Wrapper
+    - name: Generate launcher icon
+      run: |
+        mkdir -p app/src/main/res/mipmap-mdpi
+        mkdir -p app/src/main/res/mipmap-hdpi
+        mkdir -p app/src/main/res/mipmap-xhdpi
+        mkdir -p app/src/main/res/mipmap-xxhdpi
+        mkdir -p app/src/main/res/mipmap-xxxhdpi
+
+        # Создаём простую иконку через ImageMagick
+        sudo apt-get install -y imagemagick
+
+        convert -size 48x48 xc:'#7c6bf0' \
+          -fill white -gravity center -pointsize 24 -annotate 0 '✋' \
+          app/src/main/res/mipmap-mdpi/ic_launcher.png
+
+        convert -size 72x72 xc:'#7c6bf0' \
+          -fill white -gravity center -pointsize 36 -annotate 0 '✋' \
+          app/src/main/res/mipmap-hdpi/ic_launcher.png
+
+        convert -size 96x96 xc:'#7c6bf0' \
+          -fill white -gravity center -pointsize 48 -annotate 0 '✋' \
+          app/src/main/res/mipmap-xhdpi/ic_launcher.png
+
+        convert -size 144x144 xc:'#7c6bf0' \
+          -fill white -gravity center -pointsize 72 -annotate 0 '✋' \
+          app/src/main/res/mipmap-xxhdpi/ic_launcher.png
+
+        convert -size 192x192 xc:'#7c6bf0' \
+          -fill white -gravity center -pointsize 96 -annotate 0 '✋' \
+          app/src/main/res/mipmap-xxxhdpi/ic_launcher.png
+
+    - name: Setup Gradle
+      uses: gradle/actions/setup-gradle@v3
+      with:
+        gradle-version: '8.4'
+
+    - name: Create Gradle Wrapper
       run: |
         gradle wrapper --gradle-version 8.4
-
-    - name: Make gradlew executable
-      run: chmod +x ./gradlew
+        chmod +x ./gradlew
 
     - name: Build Debug APK
-      run: ./gradlew assembleDebug
+      run: ./gradlew assembleDebug --stacktrace
 
     - name: Upload APK
       uses: actions/upload-artifact@v4
