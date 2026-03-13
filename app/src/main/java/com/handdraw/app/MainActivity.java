@@ -4,7 +4,6 @@ import android.Manifest;
 import android.content.pm.PackageManager;
 import android.graphics.Bitmap;
 import android.graphics.Color;
-import android.graphics.Matrix;
 import android.os.Bundle;
 import android.util.Log;
 import android.util.Size;
@@ -15,8 +14,10 @@ import android.widget.FrameLayout;
 import android.widget.TextView;
 
 import androidx.annotation.NonNull;
+import androidx.annotation.OptIn;
 import androidx.appcompat.app.AppCompatActivity;
 import androidx.camera.core.CameraSelector;
+import androidx.camera.core.ExperimentalGetImage;
 import androidx.camera.core.ImageAnalysis;
 import androidx.camera.core.ImageProxy;
 import androidx.camera.core.Preview;
@@ -31,7 +32,6 @@ import com.google.mediapipe.framework.image.MPImage;
 import com.google.mediapipe.tasks.core.BaseOptions;
 import com.google.mediapipe.tasks.vision.core.RunningMode;
 import com.google.mediapipe.tasks.vision.handlandmarker.HandLandmarker;
-import com.google.mediapipe.tasks.vision.handlandmarker.HandLandmarkerOptions;
 import com.google.mediapipe.tasks.vision.handlandmarker.HandLandmarkerResult;
 import com.google.mediapipe.tasks.components.containers.NormalizedLandmark;
 
@@ -44,7 +44,6 @@ public class MainActivity extends AppCompatActivity {
     private static final String TAG = "HandDrawAR";
     private static final int CAMERA_PERMISSION_CODE = 100;
 
-    // UI элементы
     private PreviewView previewView;
     private DrawingView drawingView;
     private TextView statusText;
@@ -53,15 +52,12 @@ public class MainActivity extends AppCompatActivity {
     private View statusDot1;
     private View statusDot2;
 
-    // MediaPipe
     private HandLandmarker handLandmarker;
     private ExecutorService cameraExecutor;
 
-    // FPS счётчик
     private int frameCount = 0;
     private long lastFpsTime = System.currentTimeMillis();
 
-    // Состояние жестов (рука 1)
     private String confirmedGesture1 = "none";
     private String pendingGesture1 = "none";
     private int gestureFrames1 = 0;
@@ -69,20 +65,14 @@ public class MainActivity extends AppCompatActivity {
     private float smoothX1 = 0f;
     private float smoothY1 = 0f;
 
-    // Состояние жестов (рука 2)
     private String confirmedGesture2 = "none";
     private String pendingGesture2 = "none";
     private int gestureFrames2 = 0;
-    private boolean isDrawing2 = false;
-    private float smoothX2 = 0f;
-    private float smoothY2 = 0f;
 
-    // Константы
     private static final float SMOOTH_FACTOR = 0.35f;
     private static final float PINCH_THRESHOLD = 0.07f;
     private static final int GESTURE_THRESHOLD = 2;
 
-    // Цвета
     private final int[] colors = {
         Color.parseColor("#ff4757"),
         Color.parseColor("#2ed573"),
@@ -94,14 +84,12 @@ public class MainActivity extends AppCompatActivity {
     private View[] colorViews;
     private int selectedColorIndex = 0;
 
-    // Timestamp для MediaPipe
     private long lastTimestamp = 0;
 
     @Override
     protected void onCreate(Bundle savedInstanceState) {
         super.onCreate(savedInstanceState);
 
-        // Полноэкранный режим
         getWindow().addFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON);
         getWindow().getDecorView().setSystemUiVisibility(
             View.SYSTEM_UI_FLAG_FULLSCREEN
@@ -114,7 +102,6 @@ public class MainActivity extends AppCompatActivity {
 
         setContentView(R.layout.activity_main);
 
-        // Инициализация UI
         previewView = findViewById(R.id.previewView);
         drawingView = findViewById(R.id.drawingView);
         statusText = findViewById(R.id.statusText);
@@ -129,11 +116,8 @@ public class MainActivity extends AppCompatActivity {
 
         btnClear.setOnClickListener(v -> drawingView.clearAll());
         btnUndo.setOnClickListener(v -> drawingView.undo());
-        btnThickness.setOnClickListener(v -> {
-            drawingView.nextThickness();
-        });
+        btnThickness.setOnClickListener(v -> drawingView.nextThickness());
 
-        // Цвета
         colorViews = new View[]{
             findViewById(R.id.colorRed),
             findViewById(R.id.colorGreen),
@@ -151,7 +135,6 @@ public class MainActivity extends AppCompatActivity {
 
         cameraExecutor = Executors.newSingleThreadExecutor();
 
-        // Проверяем разрешение камеры
         if (ContextCompat.checkSelfPermission(this, Manifest.permission.CAMERA)
                 == PackageManager.PERMISSION_GRANTED) {
             initializeApp();
@@ -200,37 +183,44 @@ public class MainActivity extends AppCompatActivity {
         }
     }
 
-    // ============ MEDIAPIPE ============
-
     private void setupMediaPipe() {
         try {
-            BaseOptions baseOptions = BaseOptions.builder()
-                .setModelAssetPath("hand_landmarker.task")
-                .setDelegate(BaseOptions.Delegate.GPU)
-                .build();
+            BaseOptions.Builder baseBuilder = BaseOptions.builder()
+                .setModelAssetPath("hand_landmarker.task");
 
-            HandLandmarkerOptions options = HandLandmarkerOptions.builder()
-                .setBaseOptions(baseOptions)
-                .setRunningMode(RunningMode.LIVE_STREAM)
-                .setNumHands(2)
-                .setMinHandDetectionConfidence(0.7f)
-                .setMinHandPresenceConfidence(0.7f)
-                .setMinTrackingConfidence(0.6f)
-                .setResultListener(this::onHandResults)
-                .setErrorListener((error) -> {
-                    Log.e(TAG, "MediaPipe error: " + error.message());
-                })
-                .build();
+            // Пробуем GPU, если не получится — CPU
+            BaseOptions baseOptions;
+            try {
+                baseOptions = baseBuilder
+                    .setDelegate(BaseOptions.Delegate.GPU)
+                    .build();
+            } catch (Exception e) {
+                Log.w(TAG, "GPU delegate failed, falling back to CPU");
+                baseOptions = baseBuilder.build();
+            }
+
+            HandLandmarker.HandLandmarkerOptions options =
+                HandLandmarker.HandLandmarkerOptions.builder()
+                    .setBaseOptions(baseOptions)
+                    .setRunningMode(RunningMode.LIVE_STREAM)
+                    .setNumHands(2)
+                    .setMinHandDetectionConfidence(0.7f)
+                    .setMinHandPresenceConfidence(0.7f)
+                    .setMinTrackingConfidence(0.6f)
+                    .setResultListener(this::onHandResults)
+                    .setErrorListener((error) -> {
+                        Log.e(TAG, "MediaPipe error: " + error.message());
+                    })
+                    .build();
 
             handLandmarker = HandLandmarker.createFromOptions(this, options);
             Log.d(TAG, "MediaPipe initialized successfully");
+
         } catch (Exception e) {
             Log.e(TAG, "Failed to initialize MediaPipe", e);
             runOnUiThread(() -> statusText.setText("Ошибка MediaPipe!"));
         }
     }
-
-    // ============ КАМЕРА ============
 
     private void startCamera() {
         ListenableFuture<ProcessCameraProvider> future =
@@ -240,18 +230,14 @@ public class MainActivity extends AppCompatActivity {
             try {
                 ProcessCameraProvider provider = future.get();
 
-                // Превью
-                Preview preview = new Preview.Builder()
-                    .build();
+                Preview preview = new Preview.Builder().build();
                 preview.setSurfaceProvider(previewView.getSurfaceProvider());
 
-                // Зеркалим превью для фронтальной камеры
                 previewView.setImplementationMode(
                     PreviewView.ImplementationMode.COMPATIBLE);
                 previewView.setScaleType(
                     PreviewView.ScaleType.FILL_CENTER);
 
-                // Анализ кадров
                 ImageAnalysis analysis = new ImageAnalysis.Builder()
                     .setTargetResolution(new Size(640, 480))
                     .setBackpressureStrategy(
@@ -262,7 +248,6 @@ public class MainActivity extends AppCompatActivity {
 
                 analysis.setAnalyzer(cameraExecutor, this::processFrame);
 
-                // Фронтальная камера
                 CameraSelector selector =
                     CameraSelector.DEFAULT_FRONT_CAMERA;
 
@@ -270,10 +255,7 @@ public class MainActivity extends AppCompatActivity {
                 provider.bindToLifecycle(
                     this, selector, preview, analysis);
 
-                // Скрываем экран загрузки
-                runOnUiThread(() -> {
-                    loadingScreen.setVisibility(View.GONE);
-                });
+                runOnUiThread(() -> loadingScreen.setVisibility(View.GONE));
 
                 Log.d(TAG, "Camera started");
 
@@ -290,12 +272,10 @@ public class MainActivity extends AppCompatActivity {
         }
 
         try {
-            Bitmap bitmap = imageProxy.toBitmap();
+            Bitmap bitmap = toBitmap(imageProxy);
 
             if (bitmap != null) {
                 long timestamp = System.currentTimeMillis();
-
-                // Гарантируем возрастающий timestamp
                 if (timestamp <= lastTimestamp) {
                     timestamp = lastTimestamp + 1;
                 }
@@ -311,7 +291,14 @@ public class MainActivity extends AppCompatActivity {
         }
     }
 
-    // ============ ОБРАБОТКА РЕЗУЛЬТАТОВ ============
+    private Bitmap toBitmap(ImageProxy imageProxy) {
+        try {
+            return imageProxy.toBitmap();
+        } catch (Exception e) {
+            Log.e(TAG, "toBitmap failed", e);
+            return null;
+        }
+    }
 
     private void onHandResults(HandLandmarkerResult result, MPImage input) {
         runOnUiThread(() -> {
@@ -324,7 +311,6 @@ public class MainActivity extends AppCompatActivity {
     }
 
     private void processHandResults(HandLandmarkerResult result) {
-        // FPS
         frameCount++;
         long now = System.currentTimeMillis();
         if (now - lastFpsTime >= 500) {
@@ -337,7 +323,6 @@ public class MainActivity extends AppCompatActivity {
         List<List<NormalizedLandmark>> hands = result.landmarks();
         int numHands = hands.size();
 
-        // Обновляем индикаторы
         statusDot1.setBackgroundResource(
             numHands >= 1 ? R.drawable.status_dot_active
                           : R.drawable.status_dot_inactive);
@@ -348,7 +333,6 @@ public class MainActivity extends AppCompatActivity {
         if (numHands == 0) {
             statusText.setText("Ожидание рук...");
 
-            // Завершаем все активные действия
             if (isDrawing1) {
                 drawingView.finishStroke();
                 isDrawing1 = false;
@@ -367,24 +351,19 @@ public class MainActivity extends AppCompatActivity {
         int viewH = drawingView.getHeight();
         if (viewW == 0 || viewH == 0) return;
 
-        // === РУКА 1 ===
         List<NormalizedLandmark> landmarks1 = hands.get(0);
 
-        // Скелет
         float[][] skeleton = new float[21][2];
         for (int i = 0; i < 21; i++) {
             NormalizedLandmark lm = landmarks1.get(i);
-            // Зеркалим X для фронтальной камеры
             skeleton[i][0] = (1f - lm.x()) * viewW;
             skeleton[i][1] = lm.y() * viewH;
         }
         drawingView.setSkeletonPoints(skeleton);
 
-        // Жест
         String rawGesture1 = detectGesture(landmarks1);
         String gesture1 = stabilizeGesture1(rawGesture1);
 
-        // Позиция указательного пальца
         NormalizedLandmark indexTip1 = landmarks1.get(8);
         NormalizedLandmark thumbTip1 = landmarks1.get(4);
 
@@ -397,25 +376,20 @@ public class MainActivity extends AppCompatActivity {
             rawY1 = indexTip1.y() * viewH;
         }
 
-        // Сглаживание
         smoothX1 = smoothX1 * SMOOTH_FACTOR + rawX1 * (1f - SMOOTH_FACTOR);
         smoothY1 = smoothY1 * SMOOTH_FACTOR + rawY1 * (1f - SMOOTH_FACTOR);
 
         drawingView.setCursorPosition(smoothX1, smoothY1);
         drawingView.setCursorVisible(true);
 
-        // Обработка жеста
         StringBuilder mode = new StringBuilder();
 
         switch (gesture1) {
             case "point":
                 drawingView.setCursorColor(drawingView.getCurrentColor());
-
-                // Если был захват — завершаем
                 if (drawingView.isGrabbing()) {
                     drawingView.finishGrab();
                 }
-
                 if (!isDrawing1) {
                     drawingView.startStroke(smoothX1, smoothY1);
                     isDrawing1 = true;
@@ -427,18 +401,15 @@ public class MainActivity extends AppCompatActivity {
 
             case "pinch":
                 drawingView.setCursorColor(Color.parseColor("#FFD700"));
-
                 if (isDrawing1) {
                     drawingView.finishStroke();
                     isDrawing1 = false;
                 }
-
                 if (!drawingView.isGrabbing()) {
                     drawingView.startGrab(smoothX1, smoothY1);
                 } else {
                     drawingView.continueGrab(smoothX1, smoothY1);
                 }
-
                 if (drawingView.isGrabbing()) {
                     mode.append("👌 Захват (")
                         .append(drawingView.getGrabbedCount())
@@ -451,7 +422,6 @@ public class MainActivity extends AppCompatActivity {
             case "open":
                 drawingView.setCursorColor(
                     Color.argb(100, 255, 255, 255));
-
                 if (isDrawing1) {
                     drawingView.finishStroke();
                     isDrawing1 = false;
@@ -459,14 +429,12 @@ public class MainActivity extends AppCompatActivity {
                 if (drawingView.isGrabbing()) {
                     drawingView.finishGrab();
                 }
-
                 mode.append("✋ Пауза");
                 break;
 
             default:
                 drawingView.setCursorColor(
                     Color.argb(80, 255, 255, 255));
-
                 if (isDrawing1) {
                     drawingView.finishStroke();
                     isDrawing1 = false;
@@ -474,12 +442,10 @@ public class MainActivity extends AppCompatActivity {
                 if (drawingView.isGrabbing()) {
                     drawingView.finishGrab();
                 }
-
                 mode.append("🤚 Готов");
                 break;
         }
 
-        // === РУКА 2 (если есть) ===
         if (numHands >= 2) {
             List<NormalizedLandmark> landmarks2 = hands.get(1);
             String rawGesture2 = detectGesture(landmarks2);
@@ -497,8 +463,6 @@ public class MainActivity extends AppCompatActivity {
         statusText.setText(mode.toString());
         drawingView.invalidate();
     }
-
-    // ============ РАСПОЗНАВАНИЕ ЖЕСТОВ ============
 
     private String detectGesture(List<NormalizedLandmark> lm) {
         boolean indexUp = lm.get(8).y() < lm.get(6).y() - 0.03f;
@@ -524,7 +488,6 @@ public class MainActivity extends AppCompatActivity {
             pendingGesture1 = detected;
             gestureFrames1 = 1;
         }
-
         if (gestureFrames1 >= GESTURE_THRESHOLD
                 && !confirmedGesture1.equals(pendingGesture1)) {
             confirmedGesture1 = pendingGesture1;
@@ -539,15 +502,12 @@ public class MainActivity extends AppCompatActivity {
             pendingGesture2 = detected;
             gestureFrames2 = 1;
         }
-
         if (gestureFrames2 >= GESTURE_THRESHOLD
                 && !confirmedGesture2.equals(pendingGesture2)) {
             confirmedGesture2 = pendingGesture2;
         }
         return confirmedGesture2;
     }
-
-    // ============ ЖИЗНЕННЫЙ ЦИКЛ ============
 
     @Override
     protected void onResume() {
